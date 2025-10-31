@@ -3,8 +3,8 @@ random() {
 	tr </dev/urandom -dc A-Za-z0-9 | head -c5
 	echo
 }
-
 array=(1 2 3 4 5 6 7 8 9 0 a b c d e f)
+main_interface="ens34"
 gen64() {
 	ip64() {
 		echo "${array[$RANDOM % 16]}${array[$RANDOM % 16]}${array[$RANDOM % 16]}${array[$RANDOM % 16]}"
@@ -13,110 +13,140 @@ gen64() {
 }
 install_3proxy() {
     echo "installing 3proxy"
-    URL="https://raw.githubusercontent.com/quayvlog/quayvlog/main/3proxy-3proxy-0.8.6.tar.gz"
-    wget -qO- $URL | bsdtar -xvf-
-    cd 3proxy-3proxy-0.8.6
+    mkdir -p /3proxy
+    cd /3proxy
+    URL="https://github.com/z3APA3A/3proxy/archive/0.9.3.tar.gz"
+    wget -qO- $URL | tar -xzf- --strip-components=1 -C /3proxy 2>/dev/null || (mkdir -p 3proxy-0.9.3 && wget -qO- $URL | tar -xzf- && cd 3proxy-0.9.3)
+    if [ -d "3proxy-0.9.3" ]; then cd 3proxy-0.9.3; fi
     make -f Makefile.Linux
-    mkdir -p /usr/local/etc/3proxy/bin
-    mkdir -p /usr/local/etc/3proxy/logs
-    mkdir -p /usr/local/etc/3proxy/stat
-    cp src/3proxy /usr/local/etc/3proxy/bin/
-    cp ./scripts/rc.d/proxy.sh /etc/init.d/3proxy
-    chmod +x /etc/init.d/3proxy
-    chkconfig 3proxy on
+    mkdir -p /usr/local/etc/3proxy/{bin,logs,stat}
+    mv bin/3proxy /usr/local/etc/3proxy/bin/ 2>/dev/null || mv /3proxy/3proxy-0.9.3/bin/3proxy /usr/local/etc/3proxy/bin/
+    wget https://raw.githubusercontent.com/thuongtin/ipv4-ipv6-proxy/master/scripts/3proxy.service-Centos8 --output-document=/3proxy/3proxy-0.9.3/scripts/3proxy.service2 2>/dev/null || true
+    if [ -f /3proxy/3proxy-0.9.3/scripts/3proxy.service2 ]; then
+        cp /3proxy/3proxy-0.9.3/scripts/3proxy.service2 /etc/systemd/system/3proxy.service
+    else
+        cat > /etc/systemd/system/3proxy.service <<EOF
+[Unit]
+Description=3proxy Proxy Server
+After=network.target
+
+[Service]
+Type=forking
+ExecStart=/usr/local/etc/3proxy/bin/3proxy /usr/local/etc/3proxy/3proxy.cfg
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    fi
+    systemctl daemon-reload
+#    systemctl enable 3proxy
+    echo "* hard nofile 999999" >>  /etc/security/limits.conf
+    echo "* soft nofile 999999" >>  /etc/security/limits.conf
+    echo "net.ipv6.conf.$main_interface.proxy_ndp=1" >> /etc/sysctl.conf
+    echo "net.ipv6.conf.all.proxy_ndp=1" >> /etc/sysctl.conf
+    echo "net.ipv6.conf.default.forwarding=1" >> /etc/sysctl.conf
+    echo "net.ipv6.conf.all.forwarding=1" >> /etc/sysctl.conf
+    echo "net.ipv6.ip_nonlocal_bind = 1" >> /etc/sysctl.conf
+    sysctl -p
+    ufw disable 2>/dev/null || true
+    systemctl stop ufw 2>/dev/null || true
+    systemctl disable ufw 2>/dev/null || true
     cd $WORKDIR
 }
-
 gen_3proxy() {
     cat <<EOF
 daemon
-maxconn 1000
+maxconn 2000
+nserver 1.1.1.1
+nserver 8.8.4.4
+nserver 2001:4860:4860::8888
+nserver 2001:4860:4860::8844
 nscache 65536
 timeouts 1 5 30 60 180 1800 15 60
 setgid 65535
 setuid 65535
+stacksize 6291456
 flush
-auth strong
-
+auth none
 users $(awk -F "/" 'BEGIN{ORS="";} {print $1 ":CL:" $2 " "}' ${WORKDATA})
-
-$(awk -F "/" '{print "auth strong\n" \
+$(awk -F "/" '{print "auth none\n" \
 "allow " $1 "\n" \
 "proxy -6 -n -a -p" $4 " -i" $3 " -e"$5"\n" \
 "flush\n"}' ${WORKDATA})
 EOF
 }
-
 gen_proxy_file_for_user() {
     cat >proxy.txt <<EOF
 $(awk -F "/" '{print $3 ":" $4 ":" $1 ":" $2 }' ${WORKDATA})
 EOF
 }
-
 upload_proxy() {
+    cd $WORKDIR
     local PASS=$(random)
     zip --password $PASS proxy.zip proxy.txt
-    URL=$(curl -s --upload-file proxy.zip https://transfer.sh/proxy.zip)
-
+    URL=$(curl -F "file=@proxy.zip" https://file.io)
     echo "Proxy is ready! Format IP:PORT:LOGIN:PASS"
     echo "Download zip archive from: ${URL}"
     echo "Password: ${PASS}"
-
 }
 gen_data() {
     seq $FIRST_PORT $LAST_PORT | while read port; do
-        echo "usr$(random)/pass$(random)/$IP4/$port/$(gen64 $IP6)"
+        echo "$(random)/$(random)/$IP4/$port/$(gen64 $IP6)"
     done
 }
-
 gen_iptables() {
     cat <<EOF
-    $(awk -F "/" '{print "iptables -I INPUT -p tcp --dport " $4 "  -m state --state NEW -j ACCEPT"}' ${WORKDATA}) 
+    $(awk -F "/" '{print "iptables -I INPUT -p tcp --dport " $4 "  -m state --state NEW -j ACCEPT"}' ${WORKDATA})
 EOF
 }
-
 gen_ifconfig() {
     cat <<EOF
-$(awk -F "/" '{print "ifconfig ens34 inet6 add " $5 "/64"}' ${WORKDATA})
+$(awk -F "/" '{print "ifconfig '$main_interface' inet6 add " $5 "/64"}' ${WORKDATA})
 EOF
 }
 echo "installing apps"
-yum -y install gcc net-tools bsdtar zip >/dev/null
-
+apt-get update >/dev/null 2>&1
+apt-get install -y gcc net-tools libarchive-tools zip make curl wget >/dev/null 2>&1
 install_3proxy
-
 echo "working folder = /home/proxy-installer"
 WORKDIR="/home/proxy-installer"
 WORKDATA="${WORKDIR}/data.txt"
 mkdir $WORKDIR && cd $_
-
 IP4=$(curl -4 -s icanhazip.com)
 IP6=$(curl -6 -s icanhazip.com | cut -f1-4 -d':')
-
 echo "Internal ip = ${IP4}. Exteranl sub for ip6 = ${IP6}"
-
-echo "How many proxy do you want to create? Example 500"
-read COUNT
-
-FIRST_PORT=10000
-LAST_PORT=$(($FIRST_PORT + $COUNT))
-
+FIRST_PORT=20000
+LAST_PORT=20500
 gen_data >$WORKDIR/data.txt
 gen_iptables >$WORKDIR/boot_iptables.sh
 gen_ifconfig >$WORKDIR/boot_ifconfig.sh
-chmod +x ${WORKDIR}/boot_*.sh /etc/rc.local
-
+chmod +x $WORKDIR/boot_*.sh
 gen_3proxy >/usr/local/etc/3proxy/3proxy.cfg
 
-cat >>/etc/rc.local <<EOF
-bash ${WORKDIR}/boot_iptables.sh
-bash ${WORKDIR}/boot_ifconfig.sh
-ulimit -n 10048
-service 3proxy start
+# Create systemd service for startup scripts
+cat > /etc/systemd/system/3proxy-startup.service <<EOF
+[Unit]
+Description=3proxy Startup Scripts
+After=network.target
+Before=3proxy.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c 'bash ${WORKDIR}/boot_iptables.sh && bash ${WORKDIR}/boot_ifconfig.sh'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
 EOF
 
-bash /etc/rc.local
+systemctl daemon-reload
+systemctl enable 3proxy-startup.service 2>/dev/null || true
 
+# Run startup scripts immediately
+bash ${WORKDIR}/boot_iptables.sh
+bash ${WORKDIR}/boot_ifconfig.sh
+ulimit -n 65535
+/usr/local/etc/3proxy/bin/3proxy /usr/local/etc/3proxy/3proxy.cfg &
 gen_proxy_file_for_user
-
 upload_proxy
