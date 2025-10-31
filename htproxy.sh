@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 random() {
 	tr </dev/urandom -dc A-Za-z0-9 | head -c5
 	echo
@@ -77,15 +77,15 @@ $(awk -F "/" '{print "auth none\n" \
 EOF
 }
 gen_proxy_file_for_user() {
-    cat >proxy.txt <<EOF
+    cat >htproxy.txt <<EOF
 $(awk -F "/" '{print $3 ":" $4 ":" $1 ":" $2 }' ${WORKDATA})
 EOF
 }
 upload_proxy() {
     cd $WORKDIR
     local PASS=$(random)
-    zip --password $PASS proxy.zip proxy.txt
-    URL=$(curl -F "file=@proxy.zip" https://file.io)
+    zip --password $PASS htproxy.zip htproxy.txt
+    URL=$(curl -F "file=@htproxy.zip" https://file.io)
     echo "Proxy is ready! Format IP:PORT:LOGIN:PASS"
     echo "Download zip archive from: ${URL}"
     echo "Password: ${PASS}"
@@ -116,8 +116,16 @@ mkdir $WORKDIR && cd $_
 IP4=$(curl -4 -s icanhazip.com)
 IP6=$(curl -6 -s icanhazip.com | cut -f1-4 -d':')
 echo "Internal ip = ${IP4}. Exteranl sub for ip6 = ${IP6}"
+echo ""
+read -p "Nhap so luong proxy IPv6 muon tao: " PROXY_COUNT
+PROXY_COUNT=${PROXY_COUNT:-500}
+if ! [[ "$PROXY_COUNT" =~ ^[0-9]+$ ]] || [ "$PROXY_COUNT" -lt 1 ]; then
+    echo "So luong khong hop le, su dung mac dinh 500"
+    PROXY_COUNT=500
+fi
 FIRST_PORT=20000
-LAST_PORT=20500
+LAST_PORT=$((FIRST_PORT + PROXY_COUNT - 1))
+echo "Tao ${PROXY_COUNT} proxy IPv6 tu port ${FIRST_PORT} den ${LAST_PORT}"
 gen_data >$WORKDIR/data.txt
 gen_iptables >$WORKDIR/boot_iptables.sh
 gen_ifconfig >$WORKDIR/boot_ifconfig.sh
